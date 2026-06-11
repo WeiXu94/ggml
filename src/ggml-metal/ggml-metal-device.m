@@ -1178,6 +1178,34 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                    op->src[0]->type == GGML_TYPE_F32 &&
                    op->src[1]->type == GGML_TYPE_F32 &&
                    op->type == GGML_TYPE_F32;
+        case GGML_OP_CUSTOM:
+            {
+                // tagged custom ops with native Metal kernels (ggml-custom-kernels.h)
+                const struct ggml_custom_kernel_hdr * hdr = ggml_custom_kernel_hdr_from_op(op);
+                if (hdr == NULL || op->type != GGML_TYPE_F32) {
+                    return false;
+                }
+                switch (hdr->kind) {
+                    case GGML_CUSTOM_KERNEL_ERF:
+                    case GGML_CUSTOM_KERNEL_REDUCE_MAX:
+                    case GGML_CUSTOM_KERNEL_REDUCE_MIN:
+                    case GGML_CUSTOM_KERNEL_REDUCE_SUM:
+                        return op->src[0] != NULL &&
+                               op->src[0]->type == GGML_TYPE_F32 &&
+                               ggml_is_contiguous(op->src[0]);
+                    case GGML_CUSTOM_KERNEL_MSDEFORM_ATTN:
+                        for (int i = 0; i < 4; ++i) {
+                            if (op->src[i] == NULL ||
+                                op->src[i]->type != GGML_TYPE_F32 ||
+                                !ggml_is_contiguous(op->src[i])) {
+                                return false;
+                            }
+                        }
+                        return ((const struct ggml_custom_kernel_msdeform_attn *) hdr)->levels <= 8;
+                    default:
+                        return false;
+                }
+            }
         case GGML_OP_UPSCALE:
             return op->src[0]->type == GGML_TYPE_F32;
         case GGML_OP_POOL_1D:

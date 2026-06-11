@@ -390,6 +390,10 @@ static int ggml_metal_op_encode_impl(ggml_metal_op_t ctx, int idx) {
             {
                 n_fuse = ggml_metal_op_conv_2d_dw(ctx, idx);
             } break;
+        case GGML_OP_CUSTOM:
+            {
+                n_fuse = ggml_metal_op_custom(ctx, idx);
+            } break;
         case GGML_OP_CONV_TRANSPOSE_1D:
             {
                 n_fuse = ggml_metal_op_conv_transpose_1d(ctx, idx);
@@ -2030,6 +2034,108 @@ int ggml_metal_op_conv_2d_dw(ggml_metal_op_t ctx, int idx) {
     ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         3);
 
     ggml_metal_encoder_dispatch_threadgroups(enc, ntg, 1, 1, nth, 1, 1);
+
+    return 1;
+}
+
+// tagged GGML_OP_CUSTOM ops with native kernels (ggml-custom-kernels.h);
+// supports_op already verified the tag, kinds and src layout
+int ggml_metal_op_custom(ggml_metal_op_t ctx, int idx) {
+    ggml_tensor * op = ctx->node(idx);
+
+    ggml_metal_library_t lib = ctx->lib;
+    ggml_metal_encoder_t enc = ctx->enc;
+
+    const ggml_custom_kernel_hdr * hdr = ggml_custom_kernel_hdr_from_op(op);
+    GGML_ASSERT(hdr != NULL);
+
+    switch (hdr->kind) {
+        case GGML_CUSTOM_KERNEL_ERF:
+            {
+                ggml_metal_kargs_custom_erf args = {
+                    /* .np = */ ggml_nelements(op),
+                };
+
+                auto pipeline = ggml_metal_library_get_pipeline_custom_erf(lib, op);
+
+                const int nth = std::min<int64_t>(ggml_metal_pipeline_max_theads_per_threadgroup(pipeline), args.np);
+                const int ntg = (args.np + nth - 1)/nth;
+
+                ggml_metal_encoder_set_pipeline(enc, pipeline);
+                ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         2);
+
+                ggml_metal_encoder_dispatch_threadgroups(enc, ntg, 1, 1, nth, 1, 1);
+            } break;
+        case GGML_CUSTOM_KERNEL_REDUCE_MAX:
+        case GGML_CUSTOM_KERNEL_REDUCE_MIN:
+        case GGML_CUSTOM_KERNEL_REDUCE_SUM:
+            {
+                const int64_t ne00  = op->src[0]->ne[0];
+                const int64_t nrows = ne00 > 0 ? ggml_nelements(op->src[0])/ne00 : 0;
+                GGML_ASSERT(nrows == ggml_nelements(op));
+
+                ggml_metal_kargs_custom_reduce_rows args = {
+                    /* .ne00  = */ ne00,
+                    /* .nrows = */ nrows,
+                    /* .kind  = */ (int32_t) hdr->kind,
+                };
+
+                auto pipeline = ggml_metal_library_get_pipeline_custom_reduce_rows(lib, op);
+
+                int nth = 32; // SIMD width
+                while (nth < ne00 && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+                    nth *= 2;
+                }
+                nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+                nth = std::min<int>(nth, std::max<int64_t>(1, ne00));
+
+                ggml_metal_encoder_set_pipeline(enc, pipeline);
+                ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         2);
+
+                ggml_metal_encoder_set_threadgroup_memory_size(enc, pipeline.smem, 0);
+
+                ggml_metal_encoder_dispatch_threadgroups(enc, nrows, 1, 1, nth, 1, 1);
+            } break;
+        case GGML_CUSTOM_KERNEL_MSDEFORM_ATTN:
+            {
+                const ggml_custom_kernel_msdeform_attn * cfg = (const ggml_custom_kernel_msdeform_attn *) hdr;
+
+                const int64_t Q = op->ne[0];
+
+                ggml_metal_kargs_custom_msdeform_attn args = {};
+                args.heads    = cfg->heads;
+                args.levels   = cfg->levels;
+                args.points   = cfg->points;
+                args.head_dim = cfg->head_dim;
+                args.Q        = Q;
+                for (int l = 0; l < cfg->levels; ++l) {
+                    args.hl[l]        = cfg->hl[l];
+                    args.wl[l]        = cfg->wl[l];
+                    args.level_off[l] = cfg->level_off[l];
+                }
+
+                auto pipeline = ggml_metal_library_get_pipeline_custom_msdeform_attn(lib, op);
+
+                // one simdgroup per (head, query)
+                const int64_t ntg = (int64_t) cfg->heads * Q;
+
+                ggml_metal_encoder_set_pipeline(enc, pipeline);
+                ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[0]), 1);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[1]), 2);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[2]), 3);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op->src[3]), 4);
+                ggml_metal_encoder_set_buffer  (enc, ggml_metal_get_buffer_id(op),         5);
+
+                ggml_metal_encoder_dispatch_threadgroups(enc, ntg, 1, 1, 32, 1, 1);
+            } break;
+        default:
+            GGML_ABORT("unsupported custom kernel kind %u", hdr->kind);
+    }
 
     return 1;
 }

@@ -1168,6 +1168,27 @@ typedef struct {
 } ggml_metal_kargs_conv_2d_dw;
 
 typedef struct {
+    int64_t  np;
+} ggml_metal_kargs_custom_erf;
+
+typedef struct {
+    int64_t  ne00;  // row length (reduced over)
+    int64_t  nrows;
+    int32_t  kind;  // ggml_custom_kernel_kind: 2=max, 3=min, 4=sum
+} ggml_metal_kargs_custom_reduce_rows;
+
+typedef struct {
+    int32_t  heads;
+    int32_t  levels;
+    int32_t  points;
+    int32_t  head_dim;
+    int64_t  Q;
+    int32_t  hl[8];
+    int32_t  wl[8];
+    int32_t  level_off[8];
+} ggml_metal_kargs_custom_msdeform_attn;
+
+typedef struct {
     int32_t  k0;
     int32_t  s0;
     int32_t  p0;

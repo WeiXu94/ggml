@@ -3,6 +3,7 @@
 // GGML internal header
 
 #include "ggml.h"
+#include "ggml-custom-kernels.h"
 #include "gguf.h"
 
 #include <assert.h>
@@ -193,6 +194,21 @@ struct ggml_custom_op_params {
     int              n_tasks;
     void           * userdata;
 };
+
+// returns the tagged custom-kernel header if this GGML_OP_CUSTOM op carries
+// one (see ggml-custom-kernels.h), NULL otherwise
+static inline const struct ggml_custom_kernel_hdr * ggml_custom_kernel_hdr_from_op(const struct ggml_tensor * op) {
+    if (op->op != GGML_OP_CUSTOM) {
+        return NULL;
+    }
+    struct ggml_custom_op_params p;
+    memcpy(&p, op->op_params, sizeof(p));
+    const struct ggml_custom_kernel_hdr * hdr = (const struct ggml_custom_kernel_hdr *) p.userdata;
+    if (hdr == NULL || hdr->magic != GGML_CUSTOM_KERNEL_MAGIC) {
+        return NULL;
+    }
+    return hdr;
+}
 
 // bitset
 

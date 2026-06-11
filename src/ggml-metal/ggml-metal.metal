@@ -10590,6 +10590,161 @@ kernel void kernel_conv_2d_dw_f32(
     o_ptr[cur_oh * (int) args.OW + cur_ow] = sum;
 }
 
+// Native implementations of tagged GGML_OP_CUSTOM ops (ggml-custom-kernels.h).
+
+kernel void kernel_custom_erf_f32(
+        constant ggml_metal_kargs_custom_erf & args,
+        device const float * src0,
+        device       float * dst,
+        uint tpig[[thread_position_in_grid]]) {
+    if ((int64_t) tpig >= args.np) {
+        return;
+    }
+
+    dst[tpig] = erf_approx<float>(src0[tpig]);
+}
+
+// One threadgroup per row; reduces src0 row of length ne00 to dst[row].
+kernel void kernel_custom_reduce_rows_f32(
+        constant ggml_metal_kargs_custom_reduce_rows & args,
+        device const float * src0,
+        device       float * dst,
+        threadgroup  float * shmem [[threadgroup(0)]],
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort3 tpitg[[thread_position_in_threadgroup]],
+        ushort  sgitg[[simdgroup_index_in_threadgroup]],
+        ushort  tiisg[[thread_index_in_simdgroup]],
+        ushort3   ntg[[threads_per_threadgroup]]) {
+    const int64_t row = tgpig.x;
+    if (row >= args.nrows) {
+        return;
+    }
+
+    const bool is_max = args.kind == 2;
+    const bool is_min = args.kind == 3;
+
+    const float neutral = is_max ? -INFINITY : is_min ? INFINITY : 0.0f;
+
+    if (sgitg == 0) {
+        shmem[tiisg] = neutral;
+    }
+
+    device const float * x = src0 + row*args.ne00;
+
+    float acc = neutral;
+    for (int64_t i0 = tpitg.x; i0 < args.ne00; i0 += ntg.x) {
+        const float v = x[i0];
+        acc = is_max ? max(acc, v) : is_min ? min(acc, v) : acc + v;
+    }
+
+    acc = is_max ? simd_max(acc) : is_min ? simd_min(acc) : simd_sum(acc);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tiisg == 0) {
+        shmem[sgitg] = acc;
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    acc = shmem[tiisg];
+    acc = is_max ? simd_max(acc) : is_min ? simd_min(acc) : simd_sum(acc);
+
+    if (tpitg.x == 0) {
+        dst[row] = acc;
+    }
+}
+
+// Fused multi-scale deformable attention (RT-DETR decoder), batch=1.
+// One simdgroup per (head, query); lane index walks head_dim in steps of 32.
+//   V [head_dim, heads, S], O [heads*levels*points*2, Q],
+//   A [levels*points, heads, Q], R [4, 1, Q] -> dst [Q, head_dim, heads].
+kernel void kernel_custom_msdeform_attn_f32(
+        constant ggml_metal_kargs_custom_msdeform_attn & args,
+        device const float * V,
+        device const float * O,
+        device const float * A,
+        device const float * R,
+        device       float * dst,
+        uint3  tgpig[[threadgroup_position_in_grid]],
+        ushort tiisg[[thread_index_in_simdgroup]]) {
+    const int     H = args.heads;
+    const int     L = args.levels;
+    const int     P = args.points;
+    const int     D = args.head_dim;
+    const int64_t Q = args.Q;
+
+    const int64_t item = tgpig.x; // h*Q + q
+    const int64_t h = item / Q;
+    const int64_t q = item % Q;
+
+    const float cx = R[q*4 + 0];
+    const float cy = R[q*4 + 1];
+    const float rw = R[q*4 + 2];
+    const float rh = R[q*4 + 3];
+
+    const int64_t off_stride = (int64_t) H*L*P*2;
+    const int64_t att_stride = (int64_t) L*P;
+
+    const float inv_points = 1.0f/(float) P;
+
+    for (int d0 = 0; d0 < D; d0 += 32) {
+        const int d = d0 + tiisg;
+
+        float acc = 0.0f;
+
+        for (int l = 0; l < L; ++l) {
+            const int Hl = args.hl[l];
+            const int Wl = args.wl[l];
+            const int64_t base_key = args.level_off[l];
+
+            for (int p = 0; p < P; ++p) {
+                const int64_t ob = q*off_stride + ((h*L + l)*P + p)*2;
+                const float ox = O[ob + 0];
+                const float oy = O[ob + 1];
+
+                // loc = ref_center + offset/points * ref_wh * 0.5; grid = 2*loc - 1;
+                // then align_corners=0 unnormalization to pixel coordinates.
+                const float locx = cx + (ox*inv_points)*rw*0.5f;
+                const float locy = cy + (oy*inv_points)*rh*0.5f;
+                const float gx = 2.0f*locx - 1.0f;
+                const float gy = 2.0f*locy - 1.0f;
+                const float ix = ((gx + 1.0f)*(float) Wl - 1.0f)*0.5f;
+                const float iy = ((gy + 1.0f)*(float) Hl - 1.0f)*0.5f;
+
+                const int64_t x0 = (int64_t) floor(ix);
+                const int64_t y0 = (int64_t) floor(iy);
+
+                const float wx1 = ix - (float) x0;
+                const float wy1 = iy - (float) y0;
+                const float wx0 = 1.0f - wx1;
+                const float wy0 = 1.0f - wy1;
+
+                const float wa = A[q*att_stride*H + h*att_stride + l*P + p];
+
+                if (d < D) {
+                    if (x0 >= 0 && x0 < Wl && y0 >= 0 && y0 < Hl) {
+                        acc += wx0*wy0*wa * V[((base_key + y0*Wl + x0)*H + h)*D + d];
+                    }
+                    if (x0 + 1 >= 0 && x0 + 1 < Wl && y0 >= 0 && y0 < Hl) {
+                        acc += wx1*wy0*wa * V[((base_key + y0*Wl + x0 + 1)*H + h)*D + d];
+                    }
+                    if (x0 >= 0 && x0 < Wl && y0 + 1 >= 0 && y0 + 1 < Hl) {
+                        acc += wx0*wy1*wa * V[((base_key + (y0 + 1)*Wl + x0)*H + h)*D + d];
+                    }
+                    if (x0 + 1 >= 0 && x0 + 1 < Wl && y0 + 1 >= 0 && y0 + 1 < Hl) {
+                        acc += wx1*wy1*wa * V[((base_key + (y0 + 1)*Wl + x0 + 1)*H + h)*D + d];
+                    }
+                }
+            }
+        }
+
+        if (d < D) {
+            dst[(h*(int64_t) D + d)*Q + q] = acc;
+        }
+    }
+}
+
 
 kernel void kernel_pool_1d_max_f32(
         constant        ggml_metal_kargs_pool_1d & args,

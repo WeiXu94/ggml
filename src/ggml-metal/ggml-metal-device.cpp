@@ -1851,6 +1851,61 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_2d_dw(ggml_
     return res;
 }
 
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_custom_erf(ggml_metal_library_t lib, const ggml_tensor * op) {
+    assert(op->op == GGML_OP_CUSTOM);
+
+    GGML_ASSERT(ggml_is_contiguous(op->src[0]));
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->type         == GGML_TYPE_F32);
+
+    const char * name = "kernel_custom_erf_f32";
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_custom_reduce_rows(ggml_metal_library_t lib, const ggml_tensor * op) {
+    assert(op->op == GGML_OP_CUSTOM);
+
+    GGML_ASSERT(ggml_is_contiguous(op->src[0]));
+    GGML_ASSERT(op->src[0]->type == GGML_TYPE_F32);
+    GGML_ASSERT(op->type         == GGML_TYPE_F32);
+
+    const char * name = "kernel_custom_reduce_rows_f32";
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+
+    res.smem = 32*sizeof(float);
+
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_custom_msdeform_attn(ggml_metal_library_t lib, const ggml_tensor * op) {
+    assert(op->op == GGML_OP_CUSTOM);
+
+    for (int i = 0; i < 4; ++i) {
+        GGML_ASSERT(ggml_is_contiguous(op->src[i]));
+        GGML_ASSERT(op->src[i]->type == GGML_TYPE_F32);
+    }
+    GGML_ASSERT(op->type == GGML_TYPE_F32);
+
+    const char * name = "kernel_custom_msdeform_attn_f32";
+
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+
+    return res;
+}
+
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_conv_3d(ggml_metal_library_t lib, const ggml_tensor * op) {
     assert(op->op == GGML_OP_CONV_3D);
 
