@@ -10546,6 +10546,50 @@ kernel void kernel_pool_2d_avg_f32(
     o_ptr[cur_oh * args.OW + cur_ow] = res;
 }
 
+// Direct depthwise conv2d (GGML_OP_CONV_2D_DW), WHCN f32.
+//   src0 = kernel weights [KW, KH, 1, C]
+//   src1 = input          [IW, IH, C, N]
+//   dst  =                [OW, OH, C, N]
+kernel void kernel_conv_2d_dw_f32(
+        constant ggml_metal_kargs_conv_2d_dw & args,
+        device const float * src0,
+        device const float * src1,
+        device       float * dst,
+        uint gid[[thread_position_in_grid]]) {
+
+    if (gid >= (uint) args.np) {
+        return;
+    }
+
+    const int idx    = (int) gid;
+    const int O_HW   = (int) (args.OH * args.OW);
+    const int nc     = idx / O_HW;             // n*C + c
+    const int c      = nc % (int) args.C;
+    const int cur_oh = (idx % O_HW) / (int) args.OW;
+    const int cur_ow = (idx % O_HW) % (int) args.OW;
+
+    device const float * i_ptr = src1 + (long) nc * args.IH * args.IW;
+    device const float * k_ptr = src0 + (long) c  * args.KH * args.KW;
+    device       float * o_ptr = dst  + (long) nc * O_HW;
+
+    float sum = 0.0f;
+    for (int ky = 0; ky < (int) args.KH; ++ky) {
+        const int src_y = cur_oh * args.s1 + ky * args.d1 - args.p1;
+        if (src_y < 0 || src_y >= (int) args.IH) {
+            continue;
+        }
+        for (int kx = 0; kx < (int) args.KW; ++kx) {
+            const int src_x = cur_ow * args.s0 + kx * args.d0 - args.p0;
+            if (src_x < 0 || src_x >= (int) args.IW) {
+                continue;
+            }
+            sum += k_ptr[ky * (int) args.KW + kx] * i_ptr[src_y * (int) args.IW + src_x];
+        }
+    }
+
+    o_ptr[cur_oh * (int) args.OW + cur_ow] = sum;
+}
+
 
 kernel void kernel_pool_1d_max_f32(
         constant        ggml_metal_kargs_pool_1d & args,

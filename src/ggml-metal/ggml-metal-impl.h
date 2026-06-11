@@ -1151,6 +1151,23 @@ typedef struct {
 } ggml_metal_kargs_pool_2d;
 
 typedef struct {
+    int32_t  s0;
+    int32_t  s1;
+    int32_t  p0;
+    int32_t  p1;
+    int32_t  d0;
+    int32_t  d1;
+    int64_t  IH;
+    int64_t  IW;
+    int64_t  KH;
+    int64_t  KW;
+    int64_t  OH;
+    int64_t  OW;
+    int64_t  C;
+    int64_t  np;
+} ggml_metal_kargs_conv_2d_dw;
+
+typedef struct {
     int32_t  k0;
     int32_t  s0;
     int32_t  p0;

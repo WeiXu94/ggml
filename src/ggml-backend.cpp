@@ -913,10 +913,19 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
         }
         // skip ROPE since the rope freqs tensor is too small to choose a backend based on it
         // not an ideal solution
-        if (tensor->op != GGML_OP_ROPE && src->buffer != NULL && src->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
-            int src_backend_id = ggml_backend_sched_backend_from_buffer(sched, src, tensor);
+        // The weight operand may be a (not-yet-allocated) view of the weight
+        // tensor (e.g. ggml_conv_2d reshapes its kernel before the mat-mul), in
+        // which case src->buffer is still NULL during graph split. Follow the
+        // view chain to the underlying tensor so weight-based placement/offload
+        // still applies.
+        const struct ggml_tensor * wsrc = src;
+        while (wsrc->view_src != NULL) {
+            wsrc = wsrc->view_src;
+        }
+        if (tensor->op != GGML_OP_ROPE && wsrc->buffer != NULL && wsrc->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+            int src_backend_id = ggml_backend_sched_backend_from_buffer(sched, wsrc, tensor);
             // check if a backend with higher prio wants to offload the op
-            if (sched->op_offload && src_backend_id == sched->n_backends - 1 && ggml_backend_buffer_is_host(src->buffer)) {
+            if (sched->op_offload && src_backend_id == sched->n_backends - 1 && ggml_backend_buffer_is_host(wsrc->buffer)) {
                 for (int b = 0; b < src_backend_id; b++) {
                     if (ggml_backend_supports_op(sched->backends[b], tensor) && ggml_backend_offload_op(sched->backends[b], tensor)) {
                         SET_CAUSE(tensor, "1.off");
