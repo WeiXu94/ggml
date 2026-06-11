@@ -1,12 +1,15 @@
 #pragma once
 
+#include "ggml.h"
+
 #include <stdint.h>
 
 // Tagging convention that lets GPU backends recognize and natively execute
 // selected GGML_OP_CUSTOM ops instead of splitting the graph to run the CPU
 // callback: the op's userdata must point to a struct whose first member is a
-// ggml_custom_kernel_hdr carrying the magic below. Backends that do not know
-// the convention (or the specific kind) are unaffected — the op keeps its CPU
+// ggml_custom_kernel_hdr carrying the magic below, and the op itself must be
+// explicitly tagged with ggml_custom_kernel_tag(). Backends that do not know the
+// convention (or the specific kind) are unaffected: the op keeps its CPU
 // callback and runs there as before.
 
 #define GGML_CUSTOM_KERNEL_MAGIC 0x474d434bu // "GMCK"
@@ -23,6 +26,14 @@ struct ggml_custom_kernel_hdr {
     uint32_t magic;
     uint32_t kind;
 };
+
+#define GGML_CUSTOM_KERNEL_OP_PARAM_MAGIC (GGML_MAX_OP_PARAMS / sizeof(int32_t) - 2)
+#define GGML_CUSTOM_KERNEL_OP_PARAM_KIND  (GGML_MAX_OP_PARAMS / sizeof(int32_t) - 1)
+
+static inline void ggml_custom_kernel_tag(struct ggml_tensor * op, enum ggml_custom_kernel_kind kind) {
+    op->op_params[GGML_CUSTOM_KERNEL_OP_PARAM_MAGIC] = (int32_t) GGML_CUSTOM_KERNEL_MAGIC;
+    op->op_params[GGML_CUSTOM_KERNEL_OP_PARAM_KIND]  = (int32_t) kind;
+}
 
 // Fused multi-scale deformable attention (RT-DETR decoder), batch=1.
 // All srcs contiguous f32 (ne0-fastest):

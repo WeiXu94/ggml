@@ -201,10 +201,14 @@ static inline const struct ggml_custom_kernel_hdr * ggml_custom_kernel_hdr_from_
     if (op->op != GGML_OP_CUSTOM) {
         return NULL;
     }
+    if ((uint32_t) op->op_params[GGML_CUSTOM_KERNEL_OP_PARAM_MAGIC] != GGML_CUSTOM_KERNEL_MAGIC) {
+        return NULL;
+    }
+    const uint32_t kind = (uint32_t) op->op_params[GGML_CUSTOM_KERNEL_OP_PARAM_KIND];
     struct ggml_custom_op_params p;
     memcpy(&p, op->op_params, sizeof(p));
     const struct ggml_custom_kernel_hdr * hdr = (const struct ggml_custom_kernel_hdr *) p.userdata;
-    if (hdr == NULL || hdr->magic != GGML_CUSTOM_KERNEL_MAGIC) {
+    if (hdr == NULL || hdr->magic != GGML_CUSTOM_KERNEL_MAGIC || hdr->kind != kind) {
         return NULL;
     }
     return hdr;

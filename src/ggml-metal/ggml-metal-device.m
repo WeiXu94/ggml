@@ -1187,10 +1187,14 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 }
                 switch (hdr->kind) {
                     case GGML_CUSTOM_KERNEL_ERF:
+                        return op->src[0] != NULL &&
+                               op->src[0]->type == GGML_TYPE_F32 &&
+                               ggml_is_contiguous(op->src[0]);
                     case GGML_CUSTOM_KERNEL_REDUCE_MAX:
                     case GGML_CUSTOM_KERNEL_REDUCE_MIN:
                     case GGML_CUSTOM_KERNEL_REDUCE_SUM:
-                        return op->src[0] != NULL &&
+                        return has_simdgroup_reduction &&
+                               op->src[0] != NULL &&
                                op->src[0]->type == GGML_TYPE_F32 &&
                                ggml_is_contiguous(op->src[0]);
                     case GGML_CUSTOM_KERNEL_MSDEFORM_ATTN:
